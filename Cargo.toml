@@ -1,0 +1,13 @@
+[package]
+
+name = "unix-daemonize"
+version = "0.0.1"
+authors = ["Alexey Voznyuk <me@swizard.info>"]
+keywords = ["unix", "daemon", "daemonize", "background", "fork"]
+description = "Easy unix daemons support for Rust projects"
+
+[lib]
+name = "unix_daemonize"
+
+[dependencies]
+libc = "0.2"
