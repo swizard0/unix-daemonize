@@ -1,7 +1,6 @@
 extern crate libc;
 
-use std::{io, env, ffi, process};
-use std::path::Path;
+use std::{io, env, ffi, path, process};
 
 #[derive(Debug)]
 pub enum Error {
@@ -9,73 +8,75 @@ pub enum Error {
     SecondFork(Option<i32>),
     Setsid(Option<i32>),
     Chdir(io::Error),
-    StdoutFilenameToStr,
-    StderrFilenameToStr,
-    StdoutFilenameFFI(ffi::NulError),
-    StderrFilenameFFI(ffi::NulError),
-    OpenStdout(Option<i32>),
-    OpenStderr(Option<i32>),
+    FilenameToStr(path::PathBuf),
+    FilenameFFI(path::PathBuf, ffi::NulError),
+    OpenStd(path::PathBuf, Option<i32>),
+    Dup2(Option<i32>),
 }
 
-macro_rules! errno {
-    ($err:ident) => ({ Error::$err(io::Error::last_os_error().raw_os_error()) })
+struct Redirected(libc::c_int);
+
+impl Drop for Redirected {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe { libc::close(self.0) };
+            self.0 = -1;
+        }
+    }
+}
+
+fn to_path_buf<P>(path: &Option<P>) -> path::PathBuf where P: AsRef<path::Path> {
+    if let &Some(ref p) = path {
+        p.as_ref().to_owned()
+    } else {
+        let null: &path::Path = "/dev/null".as_ref();
+        null.to_path_buf()
+    }
+}
+
+fn redirect<P>(std: Option<P>) -> Result<Redirected, Error> where P: AsRef<path::Path> {
+    let filename = std.as_ref()
+        .map(|s| s.as_ref().to_str())
+        .unwrap_or(Some("/dev/null"))
+        .ok_or(Error::FilenameToStr(to_path_buf(&std)));
+    let path = try!(ffi::CString::new(try!(filename)).map_err(|e| Error::FilenameFFI(to_path_buf(&std), e)));
+
+    let fd = unsafe { libc::open(path.as_ptr(),
+                                 libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
+                                 (libc::S_IRUSR | libc::S_IRGRP | libc::S_IWGRP | libc::S_IWUSR) as libc::c_uint) };
+    if fd < 0 {
+        Err(Error::OpenStd(to_path_buf(&std), io::Error::last_os_error().raw_os_error()))
+    } else {
+        Ok(Redirected(fd))
+    }
 }
 
 pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>) -> Result<libc::pid_t, Error>
-    where PO: AsRef<Path>, PE: AsRef<Path>
+    where PO: AsRef<path::Path>, PE: AsRef<path::Path>
 {
-    let stdout_filename = stdout.as_ref()
-        .map(|s| s.as_ref().to_str())
-        .unwrap_or(Some("/dev/null"))
-        .ok_or(Error::StdoutFilenameToStr);
-    let stdout_path = try!(ffi::CString::new(try!(stdout_filename)).map_err(|e| Error::StdoutFilenameFFI(e)));
-
-    let stderr_filename = stderr.as_ref()
-        .map(|s| s.as_ref().to_str())
-        .unwrap_or(Some("/dev/null"))
-        .ok_or(Error::StderrFilenameToStr);
-    let stderr_path = try!(ffi::CString::new(try!(stderr_filename)).map_err(|e| Error::StderrFilenameFFI(e)));
-
-    let stdout_fd = unsafe { libc::open(stdout_path.as_ptr(),
-                                        libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
-                                        (libc::S_IRUSR | libc::S_IRGRP | libc::S_IWGRP | libc::S_IWUSR) as libc::c_uint) };
-    if stdout_fd < 0 {
-        return Err(errno!(OpenStdout))
-    }
-
-    let stderr_fd = unsafe { libc::open(stderr_path.as_ptr(),
-                                        libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
-                                        (libc::S_IRUSR | libc::S_IRGRP | libc::S_IWGRP | libc::S_IWUSR) as libc::c_uint) };
-    if stderr_fd < 0 {
-        unsafe { libc::close(stdout_fd) };
-        return Err(errno!(OpenStderr))
-    }
-
-    daemonize(stdout_fd, stderr_fd)
+    daemonize(try!(redirect(stdout)), try!(redirect(stderr)))
 }
 
-fn daemonize(stdout_fd: libc::c_int, stderr_fd: libc::c_int) -> Result<libc::pid_t, Error> {
+fn daemonize(mut stdout_fd: Redirected, mut stderr_fd: Redirected) -> Result<libc::pid_t, Error> {
+    macro_rules! errno {
+        ($err:ident) => ({ return Err(Error::$err(io::Error::last_os_error().raw_os_error())) })
+    }
+
     let pid = unsafe { libc::fork() };
-    if pid == -1 {
-        unsafe { libc::close(stdout_fd) };
-        unsafe { libc::close(stderr_fd) };
-        return Err(errno!(FirstFork))
+    if pid < 0 {
+        errno!(FirstFork)
     } else if pid != 0 {
         process::exit(0)
     }
 
-    if unsafe { libc::setsid() } == -1 {
-        unsafe { libc::close(stdout_fd) };
-        unsafe { libc::close(stderr_fd) };
-        return Err(errno!(Setsid))
+    if unsafe { libc::setsid() } < 0 {
+        errno!(Setsid)
     }
 
     unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN); }
     let pid = unsafe { libc::fork() };
-    if pid == -1 {
-        unsafe { libc::close(stdout_fd) };
-        unsafe { libc::close(stderr_fd) };
-        return Err(errno!(SecondFork))
+    if pid < 0 {
+        errno!(SecondFork)
     } else if pid != 0 {
         process::exit(0)
     }
@@ -83,15 +84,20 @@ fn daemonize(stdout_fd: libc::c_int, stderr_fd: libc::c_int) -> Result<libc::pid
     match env::set_current_dir("/") {
         Ok(()) => (),
         Err(e) => {
-            unsafe { libc::close(stdout_fd) };
-            unsafe { libc::close(stderr_fd) };
             return Err(Error::Chdir(e))
         },
     }
 
-    unsafe {
-        libc::dup2(stdout_fd, libc::STDOUT_FILENO);
-        libc::dup2(stderr_fd, libc::STDERR_FILENO);
+    if unsafe { libc::dup2(stdout_fd.0, libc::STDOUT_FILENO) } < 0 {
+        errno!(Dup2)
+    } else {
+        stdout_fd.0 = -1
+    }
+
+    if unsafe { libc::dup2(stderr_fd.0, libc::STDERR_FILENO) } < 0 {
+        errno!(Dup2)
+    } else {
+        stderr_fd.0 = -1
     }
 
     Ok(pid)

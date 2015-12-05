@@ -17,6 +17,7 @@ fn main() {
             thread::sleep(time::Duration::from_millis(1000));
         }
         println!("Successfull termination");
+        panic!("An now a panic occurs!");
     } else {
         writeln!(&mut io::stderr(), "Usage: {} <stdout_filename> <stderr_filename>", cmd_proc).unwrap();
         process::exit(1);
