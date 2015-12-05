@@ -108,5 +108,5 @@ fn daemonize(mut stdout_fd: Redirected, mut stderr_fd: Redirected, chdir: ChdirM
         stderr_fd.0 = -1
     }
 
-    Ok(pid)
+    Ok(unsafe { libc::getpid() })
 }
