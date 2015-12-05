@@ -14,6 +14,12 @@ pub enum Error {
     Dup2(Option<i32>),
 }
 
+#[derive(Debug)]
+pub enum ChdirMode {
+    NoChdir,
+    ChdirRoot,
+}
+
 struct Redirected(libc::c_int);
 
 impl Drop for Redirected {
@@ -51,13 +57,13 @@ fn redirect<P>(std: Option<P>) -> Result<Redirected, Error> where P: AsRef<path:
     }
 }
 
-pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>) -> Result<libc::pid_t, Error>
+pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>, chdir: ChdirMode) -> Result<libc::pid_t, Error>
     where PO: AsRef<path::Path>, PE: AsRef<path::Path>
 {
-    daemonize(try!(redirect(stdout)), try!(redirect(stderr)))
+    daemonize(try!(redirect(stdout)), try!(redirect(stderr)), chdir)
 }
 
-fn daemonize(mut stdout_fd: Redirected, mut stderr_fd: Redirected) -> Result<libc::pid_t, Error> {
+fn daemonize(mut stdout_fd: Redirected, mut stderr_fd: Redirected, chdir: ChdirMode) -> Result<libc::pid_t, Error> {
     macro_rules! errno {
         ($err:ident) => ({ return Err(Error::$err(io::Error::last_os_error().raw_os_error())) })
     }
@@ -81,11 +87,13 @@ fn daemonize(mut stdout_fd: Redirected, mut stderr_fd: Redirected) -> Result<lib
         process::exit(0)
     }
 
-    match env::set_current_dir("/") {
-        Ok(()) => (),
-        Err(e) => {
-            return Err(Error::Chdir(e))
-        },
+    if let ChdirMode::ChdirRoot = chdir {
+        match env::set_current_dir("/") {
+            Ok(()) => (),
+            Err(e) => {
+                return Err(Error::Chdir(e))
+            },
+        }
     }
 
     if unsafe { libc::dup2(stdout_fd.0, libc::STDOUT_FILENO) } < 0 {
