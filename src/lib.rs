@@ -1,4 +1,3 @@
-#![feature(convert)]
 extern crate libc;
 
 use std::{io, env, ffi, process};
@@ -10,8 +9,10 @@ pub enum Error {
     SecondFork(Option<i32>),
     Setsid(Option<i32>),
     Chdir(io::Error),
-    StdoutFilename(ffi::NulError),
-    StderrFilename(ffi::NulError),
+    StdoutFilenameToStr,
+    StderrFilenameToStr,
+    StdoutFilenameFFI(ffi::NulError),
+    StderrFilenameFFI(ffi::NulError),
     OpenStdout(Option<i32>),
     OpenStderr(Option<i32>),
 }
@@ -23,10 +24,17 @@ macro_rules! errno {
 pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>) -> Result<libc::pid_t, Error>
     where PO: AsRef<Path>, PE: AsRef<Path>
 {
-    let stdout_filename = stdout.as_ref().map(|s| s.as_ref().as_os_str()).unwrap_or(ffi::OsStr::new("/dev/null"));
-    let stderr_filename = stderr.as_ref().map(|s| s.as_ref().as_os_str()).unwrap_or(ffi::OsStr::new("/dev/null"));
-    let stdout_path = try!(ffi::CString::new(stdout_filename.to_bytes().unwrap()).map_err(|e| Error::StdoutFilename(e)));
-    let stderr_path = try!(ffi::CString::new(stderr_filename.to_bytes().unwrap()).map_err(|e| Error::StderrFilename(e)));
+    let stdout_filename = stdout.as_ref()
+        .map(|s| s.as_ref().to_str())
+        .unwrap_or(Some("/dev/null"))
+        .ok_or(Error::StdoutFilenameToStr);
+    let stdout_path = try!(ffi::CString::new(try!(stdout_filename)).map_err(|e| Error::StdoutFilenameFFI(e)));
+
+    let stderr_filename = stderr.as_ref()
+        .map(|s| s.as_ref().to_str())
+        .unwrap_or(Some("/dev/null"))
+        .ok_or(Error::StderrFilenameToStr);
+    let stderr_path = try!(ffi::CString::new(try!(stderr_filename)).map_err(|e| Error::StderrFilenameFFI(e)));
 
     let stdout_fd = unsafe { libc::open(stdout_path.as_ptr(),
                                         libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
