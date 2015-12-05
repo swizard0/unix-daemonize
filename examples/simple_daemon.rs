@@ -2,14 +2,14 @@ extern crate unix_daemonize;
 
 use std::{io, env, time, thread, process};
 use std::io::Write;
-use unix_daemonize::daemonize_log;
+use unix_daemonize::daemonize_redirect;
 
 fn main() {
     let mut args = env::args();
     let cmd_proc = args.next().unwrap();
     if let (Some(stdout_filename), Some(stderr_filename)) = (args.next(), args.next()) {
         println!("Ready to daemonize, target stdout_filename = {}, stderr_filename = {}", stdout_filename, stderr_filename);
-        daemonize_log(stdout_filename, stderr_filename).unwrap();
+        daemonize_redirect(Some(stdout_filename), Some(stderr_filename)).unwrap();
         for _ in 0 .. 10 {
             println!("A string for stdout!");
             writeln!(&mut io::stdout(), "Another string for stdout!").unwrap();

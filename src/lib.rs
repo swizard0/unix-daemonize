@@ -1,10 +1,8 @@
-#![feature(set_stdio)]
+#![feature(convert)]
 extern crate libc;
 
-use std::{io, fs, env, process};
+use std::{io, env, ffi, process};
 use std::path::Path;
-use libc::{fork, setsid};
-use libc::{signal, SIGHUP, SIG_IGN};
 
 #[derive(Debug)]
 pub enum Error {
@@ -12,45 +10,81 @@ pub enum Error {
     SecondFork(Option<i32>),
     Setsid(Option<i32>),
     Chdir(io::Error),
-    OpenStdoutLog(io::Error),
-    OpenStderrLog(io::Error),
+    StdoutFilename(ffi::NulError),
+    StderrFilename(ffi::NulError),
+    OpenStdout(Option<i32>),
+    OpenStderr(Option<i32>),
 }
 
 macro_rules! errno {
     ($err:ident) => ({ Error::$err(io::Error::last_os_error().raw_os_error()) })
 }
 
-pub fn daemonize_log<PO, PE>(stdout_log: PO, stderr_log: PE) -> Result<(), Error> where PO: AsRef<Path>, PE: AsRef<Path> {
-    let stdout = try!(fs::File::create(stdout_log).map_err(|e| Error::OpenStdoutLog(e)));
-    let stderr = try!(fs::File::create(stderr_log).map_err(|e| Error::OpenStderrLog(e)));
-    daemonize(io::BufWriter::new(stdout), io::BufWriter::new(stderr))
+pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>) -> Result<libc::pid_t, Error>
+    where PO: AsRef<Path>, PE: AsRef<Path>
+{
+    let stdout_filename = stdout.as_ref().map(|s| s.as_ref().as_os_str()).unwrap_or(ffi::OsStr::new("/dev/null"));
+    let stderr_filename = stderr.as_ref().map(|s| s.as_ref().as_os_str()).unwrap_or(ffi::OsStr::new("/dev/null"));
+    let stdout_path = try!(ffi::CString::new(stdout_filename.to_bytes().unwrap()).map_err(|e| Error::StdoutFilename(e)));
+    let stderr_path = try!(ffi::CString::new(stderr_filename.to_bytes().unwrap()).map_err(|e| Error::StderrFilename(e)));
+
+    let stdout_fd = unsafe { libc::open(stdout_path.as_ptr(),
+                                        libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
+                                        (libc::S_IRUSR | libc::S_IRGRP | libc::S_IWGRP | libc::S_IWUSR) as libc::c_uint) };
+    if stdout_fd < 0 {
+        return Err(errno!(OpenStdout))
+    }
+
+    let stderr_fd = unsafe { libc::open(stderr_path.as_ptr(),
+                                        libc::O_CREAT | libc::O_WRONLY | libc::O_APPEND,
+                                        (libc::S_IRUSR | libc::S_IRGRP | libc::S_IWGRP | libc::S_IWUSR) as libc::c_uint) };
+    if stderr_fd < 0 {
+        unsafe { libc::close(stdout_fd) };
+        return Err(errno!(OpenStderr))
+    }
+
+    daemonize(stdout_fd, stderr_fd)
 }
 
-pub fn daemonize<WO, WE>(stdout_redirect: WO, stderr_redirect: WE) -> Result<(), Error>
-    where WO: io::Write + Send + 'static, WE: io::Write + Send + 'static
-{
-    let pid = unsafe { fork() };
+fn daemonize(stdout_fd: libc::c_int, stderr_fd: libc::c_int) -> Result<libc::pid_t, Error> {
+    let pid = unsafe { libc::fork() };
     if pid == -1 {
+        unsafe { libc::close(stdout_fd) };
+        unsafe { libc::close(stderr_fd) };
         return Err(errno!(FirstFork))
     } else if pid != 0 {
         process::exit(0)
     }
 
-    if unsafe { setsid() } == -1 {
+    if unsafe { libc::setsid() } == -1 {
+        unsafe { libc::close(stdout_fd) };
+        unsafe { libc::close(stderr_fd) };
         return Err(errno!(Setsid))
     }
 
-    unsafe { signal(SIGHUP, SIG_IGN); }
-    let pid = unsafe { fork() };
+    unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN); }
+    let pid = unsafe { libc::fork() };
     if pid == -1 {
+        unsafe { libc::close(stdout_fd) };
+        unsafe { libc::close(stderr_fd) };
         return Err(errno!(SecondFork))
     } else if pid != 0 {
         process::exit(0)
     }
 
-    try!(env::set_current_dir("/").map_err(|e| Error::Chdir(e)));
+    match env::set_current_dir("/") {
+        Ok(()) => (),
+        Err(e) => {
+            unsafe { libc::close(stdout_fd) };
+            unsafe { libc::close(stderr_fd) };
+            return Err(Error::Chdir(e))
+        },
+    }
 
-    let _ = io::set_print(Box::new(stdout_redirect));
-    let _ = io::set_panic(Box::new(stderr_redirect));
-    Ok(())
+    unsafe {
+        libc::dup2(stdout_fd, libc::STDOUT_FILENO);
+        libc::dup2(stderr_fd, libc::STDERR_FILENO);
+    }
+
+    Ok(pid)
 }
