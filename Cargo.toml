@@ -5,6 +5,8 @@ version = "0.1.2"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 keywords = ["unix", "daemon", "daemonize", "background", "fork"]
 description = "Easy unix daemons support for Rust projects"
+homepage = "https://github.com/swizard0/unix-daemonize"
+repository = "https://github.com/swizard0/unix-daemonize.git"
 
 [lib]
 name = "unix_daemonize"
