@@ -1,7 +1,18 @@
+//! Easy to use daemonizing for rust programs in unix enviroment.
+//!
+//! ```
+//! daemonize_redirect(Some("stdout.log"), Some("stderr.log"), ChdirMode::ChdirRoot).unwrap();
+//! ```
+//! See examples for sample program.
+
 extern crate libc;
 
 use std::{io, env, ffi, path, process};
 
+/// The error type for daemonizing related operations.
+///
+/// Most variants holds `Option<i32>` value, where `i32`
+/// stands for `errno` result for corresponding OS functions.
 #[derive(Debug)]
 pub enum Error {
     FirstFork(Option<i32>),
@@ -57,6 +68,11 @@ fn redirect<P>(std: Option<P>) -> Result<Redirected, Error> where P: AsRef<path:
     }
 }
 
+/// Performs program daemonizing with optional redirection for STDIN and STDOUT.
+/// If the redirection parameter is `None`, then stream will be redirected to `/dev/null`,
+/// otherwise it will be redirected to the file provided.
+///
+/// Returns the new process id after all forks.
 pub fn daemonize_redirect<PO, PE>(stdout: Option<PO>, stderr: Option<PE>, chdir: ChdirMode) -> Result<libc::pid_t, Error>
     where PO: AsRef<path::Path>, PE: AsRef<path::Path>
 {
